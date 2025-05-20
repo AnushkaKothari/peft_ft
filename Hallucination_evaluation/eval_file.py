@@ -175,15 +175,14 @@ def process_specific_file(repo_name, file_name):
 
 def main():
     # Initialize Hugging Face API
-    hugging_face_token = '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'
+    hugging_face_token = '*******************'
     login(token=hugging_face_token)
 
-    repo_name = 'Anushka1304/summarization_results'
+    repo_name = 'summarization_results'
     file_name = 'elife/adalora/rank4/adalora_elife_rank4_full.json'  # Specify the file name from Hugging Face repository
     # First part of the filename is the dataset name, second part is the peft technique, and third part is the rank
     # Process and update the specific file
     process_specific_file(repo_name, file_name)
-
 
 if __name__ == '__main__':
     main()

@@ -1,13 +1,13 @@
 import torch
 import wandb
 from transformers import (AutoTokenizer, BitsAndBytesConfig)
-from peft import LoraConfig
+from peft import LoraConfig, AdaLoraConfig, IA3Config
 import logging
 import sys
 from accelerate import Accelerator
 
-from function_scinews import (notebook_login, setup_environment, set_seed, load_and_prepare_dataset, 
-                      model_and_tokenizer_setup, train_model, generate_answer,
+from function import (notebook_login, setup_environment, set_seed, load_and_prepare_dataset, 
+                      model_and_tokenizer_setup, model_and_tokenizer_setup_quantization, train_model_with_model_performance, generate_answer,
                        postprocess_prediction, save_prediction_to_file)
 
 logging.basicConfig(level=logging.INFO)
@@ -15,24 +15,24 @@ logger = logging.getLogger(__name__)
 
 def main():
     print("Start Hugging Face....................")
-    hugging_face_token = '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'
+    hugging_face_token = '*******************'
     notebook_login(hugging_face_token)
 
     config = {
         "base_model": "lmsys/vicuna-7b-v1.5",
-        "wandb_project": "Vicuna7b_model_performance",
+        "wandb_project": "Vicuna7b_model_performance", # # TO CHANGE with Dataset 
         "random_seed": 2024,
-        "huggingface_model": "Anushka1304/vicuna7b_v15_rank32_scinews_qlora_8", # TO CHANGE with Dataset Size
-        "dataset_name": "dongqi-me/SciNews",  # TO CHANGE with Dataset
+        "huggingface_model": "vicuna7b_v15_rank32_elife_qlora_8", # TO CHANGE with Dataset Size
+        "dataset_name": "elife_with_full_paper",  # TO CHANGE with Dataset "dongqi-me/SciNews"
         "dataset_sizes": {"train": 8, "validation": 0 ,"test": 5},  # TO CHANGE with Dataset Size
         "full": False, # TO CHANGE with Dataset Size
         "max_length": 16384,
         "num_beams" : 1,
-        "method" : "qlora",
-        "rank" : 32,
-        "dataset": "scinews",
+        "method" : "qlora", # TO CHANGE with Method
+        "rank" : 32, # TO CHANGE with Rank
+        "dataset": "elife", # TO CHANGE with Dataset 
         "size" : "8", # TO CHANGE with Dataset Size
-        "result_json":"results_scinews_rank32_qlora_8.json", # TO CHANGE with Dataset Size
+        "result_json":"results_elife_rank32_qlora_8.json", # TO CHANGE with Dataset Size
         "training_args": {
             "output_dir": "./vicuna_instruct_generation_results",
             "per_device_train_batch_size": 2,
@@ -62,13 +62,48 @@ def main():
     if dataset is None:
         sys.exit("Failed to load dataset. Exiting...")
 
-    quant_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_use_double_quant=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.bfloat16,
-    )
-    peft_config = LoraConfig(r=config["rank"], use_rslora=True, lora_alpha=2*config["rank"],target_modules=[
+    if config['method'] == 'qlora':
+        quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        )
+        peft_config = LoraConfig(r=config["rank"], use_rslora=True, lora_alpha=2*config["rank"],target_modules=[
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+                "lm_head",
+            ],
+            bias="none",
+            lora_dropout=0.1,  # Conventional
+            task_type="CAUSAL_LM",)
+        accelerator = Accelerator()
+        model, tokenizer = model_and_tokenizer_setup_quantization(config["base_model"], quant_config, peft_config)
+    
+    elif config['method'] == 'lora':
+        peft_config = LoraConfig(r=config["rank"], use_rslora=True, lora_alpha=2*config["rank"],target_modules=[
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+                "lm_head",
+            ],
+            bias="none",
+            lora_dropout=0.1,  # Conventional
+            task_type="CAUSAL_LM",)
+        accelerator = Accelerator()
+        model, tokenizer = model_and_tokenizer_setup(config["base_model"], peft_config)
+
+    elif config['method'] == 'adalora':
+        peft_config = AdaLoraConfig(peft_type="ADALORA",r=config["rank"], lora_alpha=2*config["rank"],target_modules=[
             "q_proj",
             "k_proj",
             "v_proj",
@@ -77,12 +112,24 @@ def main():
             "up_proj",
             "down_proj",
             "lm_head",
-        ],
-        bias="none",
-        lora_dropout=0.1,  # Conventional
-        task_type="CAUSAL_LM",)
-    accelerator = Accelerator()
-    model, tokenizer = model_and_tokenizer_setup(config["base_model"], quant_config, peft_config)
+        ], lora_dropout=0.1, task_type="CAUSAL_LM")
+        accelerator = Accelerator()
+        model, tokenizer = model_and_tokenizer_setup(config["base_model"], peft_config)
+
+    elif config['method'] == 'ia3':
+        peft_config = IA3Config(peft_type="IA3",task_type="CAUSAL_LM", target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+            "lm_head",
+        ], feedforward_modules=["down_proj"])
+        accelerator = Accelerator()
+        model, tokenizer = model_and_tokenizer_setup(config["base_model"], peft_config)
+
     # Move model to multiple GPUs using accelerate
     model = accelerator.prepare(model)
     print("Start Model Parallelization....................")
@@ -91,7 +138,7 @@ def main():
     if model is None or tokenizer is None:
         sys.exit("Failed to set up model. Exiting...")
     
-    trainer, total_time, flops_per_step, macs_per_step, time_per_step, flops_per_second, max_memory_usage = train_model(dataset, model, tokenizer, config["training_args"], config["max_length"])
+    trainer, total_time, flops_per_step, macs_per_step, time_per_step, flops_per_second, max_memory_usage = train_model_with_model_performance(dataset, model, tokenizer, config["training_args"], config["max_length"])
     if trainer is None:
         sys.exit("Failed to set up trainer. Exiting...")
     torch.cuda.empty_cache()
